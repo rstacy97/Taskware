@@ -1,4 +1,5 @@
 import gi
+from taskware.utils.nl2cron import nl_to_cron_with_suggestions, nl_to_cron_and_extras
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -19,6 +20,14 @@ class AddJobDialog(Gtk.Dialog):
         self._desc_entry = Gtk.Entry(placeholder_text="Optional description, e.g. Nightly DB backup")
         box.append(Gtk.Label(label="Description (optional)"))
         box.append(self._desc_entry)
+
+        # Natural language schedule (smarter parsing with suggestions)
+        self._nl_entry = Gtk.Entry(placeholder_text="e.g. every monday at 6 pm, every 15 minutes, daily at 02:30")
+        box.append(Gtk.Label(label="Natural language schedule (optional)"))
+        box.append(self._nl_entry)
+        # Suggestions area
+        self._sugg_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.append(self._sugg_box)
 
         # Command entry
         self._command_entry = Gtk.Entry(placeholder_text="Command to run, e.g. /usr/bin/backup --quick")
@@ -218,6 +227,9 @@ class AddJobDialog(Gtk.Dialog):
         # Wire constraints toggle
         self._constraints_chk.connect("toggled", lambda *_: self._advanced_frame.set_visible(self._constraints_chk.get_active()))
         self._update_builder_visibility()
+        # Connect NL parser after UI is ready
+        self._nl_entry.connect("changed", self._on_nl_changed)
+        self._nl_extras: dict[str, object] = {}
         self._apply_builder_to_cron()
 
     # (Removed) Natural language change handler
@@ -226,6 +238,205 @@ class AddJobDialog(Gtk.Dialog):
         cmd_ok = bool(self._command_entry.get_text().strip())
         cron_ok = len(self._cron_entry.get_text().strip().split()) == 5
         self._add_btn.set_sensitive(cmd_ok and cron_ok)
+
+    def _on_nl_changed(self, *_):
+        text = self._nl_entry.get_text().strip()
+        cron, extras, suggestions = (nl_to_cron_and_extras(text) if text else (None, {}, []))
+        # Clear previous suggestions
+        for child in list(self._sugg_box):
+            self._sugg_box.remove(child)
+        if cron:
+            # Apply parsed cron
+            self._cron_entry.set_text(cron)
+            # If extras specify a frequency context, set it before applying cron
+            # Decide target frequency index:
+            # 0=Every minute,1=Every N,2=Hourly,3=Daily,4=Weekly,5=Biweekly,6=Monthly,7=One-time
+            target_sel = None
+            if extras.get("day_of_month") is not None:
+                target_sel = 6  # Monthly
+            elif extras.get("weekday") is not None and extras.get("biweekly"):
+                target_sel = 5  # Biweekly
+            elif extras.get("weekday") is not None:
+                target_sel = 4  # Weekly
+            elif extras.get("hour") is not None:
+                target_sel = 3  # Daily (single time)
+            if target_sel is not None:
+                try:
+                    self._freq_dd.set_selected(target_sel)
+                except Exception:
+                    pass
+            # Update time/weekday/day-of-month controls from extras when available
+            try:
+                if "hour" in extras and "minute" in extras and hasattr(self, "_start_dd"):
+                    h = max(0, min(23, int(extras["hour"])) )
+                    m = max(0, min(59, int(extras["minute"])) )
+                    m = (m // 15) * 15
+                    self._start_dd.set_selected(h * 4 + (m // 15))
+                if "weekday" in extras and hasattr(self, "_weekday_buttons"):
+                    # Clear all then set selected
+                    for i, btn in enumerate(self._weekday_buttons):
+                        btn.set_active(i == int(extras["weekday"]))
+                if "day_of_month" in extras and hasattr(self, "_dom"):
+                    self._dom.set_value(int(extras["day_of_month"]))
+            except Exception:
+                pass
+            # Apply cron to builder to ensure consistency
+            self._apply_cron_to_builder(cron)
+            # Stash extras (e.g., biweekly) for submit
+            self._nl_extras = extras or {}
+            self._validate()
+            return
+        # No cron parsed; apply extras-only hints if present (weekday/biweekly), else clear
+        self._nl_extras = extras or {}
+        if self._nl_extras.get("weekday") is not None or self._nl_extras.get("weekdays") is not None:
+            target_sel = 5 if self._nl_extras.get("biweekly") else 4
+            try:
+                self._freq_dd.set_selected(target_sel)
+            except Exception:
+                pass
+            try:
+                # Clear all
+                for btn in self._weekday_buttons:
+                    btn.set_active(False)
+                if self._nl_extras.get("weekdays") is not None:
+                    for idx in (self._nl_extras.get("weekdays") or []):
+                        if isinstance(idx, int) and 0 <= idx <= 6:
+                            self._weekday_buttons[idx].set_active(True)
+                else:
+                    idx = int(self._nl_extras["weekday"]) or 0
+                    if 0 <= idx <= 6:
+                        self._weekday_buttons[idx].set_active(True)
+            except Exception:
+                pass
+            # With frequency/weekday set, rebuild cron from current grid/time
+            self._apply_builder_to_cron()
+            self._validate()
+        # Even without a full parse, try to set context (frequency) and time from keywords
+        lower = text.lower()
+        target_sel = None
+        # Biweekly synonyms
+        if any(kw in lower for kw in ("biweekly", "bi-weekly", "every other week", "every 2 weeks", "every two weeks")):
+            target_sel = 5
+        # Monthly synonyms
+        elif any(kw in lower for kw in ("monthly", "every month")):
+            target_sel = 6
+        # Weekly
+        elif "weekly" in lower or "every week" in lower:
+            target_sel = 4
+        # Daily / Hourly
+        elif "daily" in lower or "every day" in lower:
+            target_sel = 3
+        elif "hourly" in lower or "every hour" in lower:
+            target_sel = 2
+        if target_sel is not None:
+            try:
+                self._freq_dd.set_selected(target_sel)
+            except Exception:
+                pass
+        # Parse an 'at <time>' snippet and update Start time
+        import re as _re
+        m = _re.search(r"\bat\s+((?:[0-9]{1,2}(?::[0-9]{2})?\s*(?:a|p|am|pm)?)|(?:[0-9]{1,2}:[0-9]{2})|noon|midnight)\b", lower)
+        if m and hasattr(self, "_start_dd"):
+            t = m.group(1).strip()
+            # simple time parse
+            h = None; minute = 0
+            m2 = None
+            if t == "noon":
+                h = 12; minute = 0
+            elif t == "midnight":
+                h = 0; minute = 0
+            else:
+                m2 = _re.match(r"^(\d{1,2}):(\d{2})$", t)
+            if m2 is not None:
+                h = int(m2.group(1)); minute = int(m2.group(2))
+            else:
+                m3 = _re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)$", t)
+                if m3:
+                    h = int(m3.group(1)); minute = int(m3.group(2) or 0)
+                    ap = m3.group(3)
+                    if ap == "a":
+                        ap = "am"
+                    elif ap == "p":
+                        ap = "pm"
+                    if 1 <= h <= 12:
+                        if ap == "pm" and h != 12:
+                            h += 12
+                        if ap == "am" and h == 12:
+                            h = 0
+                else:
+                    m4 = _re.match(r"^(\d{1,2})$", t)
+                    if m4:
+                        h = int(m4.group(1))
+            if h is not None and 0 <= h <= 23 and 0 <= minute < 60:
+                minute = (minute // 15) * 15
+                try:
+                    self._start_dd.set_selected(h * 4 + (minute // 15))
+                except Exception:
+                    pass
+        # If no 'at <time>' form matched, still accept bare 'noon' or 'midnight' anywhere
+        if ("noon" in lower or "midnight" in lower) and hasattr(self, "_start_dd"):
+            try:
+                h = 12 if "noon" in lower else 0
+                minute = 0
+                self._start_dd.set_selected(h * 4 + (minute // 15))
+            except Exception:
+                pass
+        # Also accept standalone compact times like '5a', '7:15p', '5pm', '07:30'
+        if hasattr(self, "_start_dd"):
+            tmatch = _re.search(r"\b(\d{1,2}(:\d{2})?\s*(?:a|p|am|pm)|\d{1,2}:\d{2})\b", lower)
+            if tmatch:
+                t = tmatch.group(1).strip()
+                h = None; minute = 0
+                if t == "noon":
+                    h = 12; minute = 0
+                elif t == "midnight":
+                    h = 0; minute = 0
+                else:
+                    m2 = _re.match(r"^(\d{1,2}):(\d{2})$", t)
+                    if m2:
+                        h = int(m2.group(1)); minute = int(m2.group(2))
+                    else:
+                        m3 = _re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(a|p|am|pm)$", t)
+                        if m3:
+                            h = int(m3.group(1)); minute = int(m3.group(2) or 0)
+                            ap = m3.group(3)
+                            if ap == "a": ap = "am"
+                            if ap == "p": ap = "pm"
+                            if 1 <= h <= 12:
+                                if ap == "pm" and h != 12:
+                                    h += 12
+                                if ap == "am" and h == 12:
+                                    h = 0
+                if h is not None and 0 <= h <= 23 and 0 <= minute < 60:
+                    minute = (minute // 15) * 15
+                    try:
+                        self._start_dd.set_selected(h * 4 + (minute // 15))
+                    except Exception:
+                        pass
+        # Weekday words (support multiple)
+        wd_map = {"sun":0,"sunday":0,"sundays":0,
+                  "mon":1,"monday":1,"mondays":1,
+                  "tue":2,"tues":2,"tuesday":2,"tuesdays":2,
+                  "wed":3,"wednesday":3,"wednesdays":3,
+                  "thu":4,"thur":4,"thurs":4,"thursday":4,"thursdays":4,
+                  "fri":5,"friday":5,"fridays":5,
+                  "sat":6,"saturday":6,"saturdays":6}
+        if hasattr(self, "_weekday_buttons"):
+            tokens = [t.strip() for t in lower.replace(","," ").replace(" and ", " ").split() if t.strip()]
+            selected = {wd_map[t] for t in tokens if t in wd_map}
+            if selected:
+                # If any weekdays detected, ensure weekly frequency unless already set to biweekly
+                if self._freq_dd.get_selected() not in (4, 5):
+                    self._freq_dd.set_selected(4)
+                for i, btn in enumerate(self._weekday_buttons):
+                    btn.set_active(i in selected)
+        # Show suggestion buttons if any
+        for sug in suggestions[:3]:
+            btn = Gtk.Button.new_with_label(sug)
+            def on_click(_b, phrase=sug):
+                self._nl_entry.set_text(phrase)
+            btn.connect("clicked", on_click)
+            self._sugg_box.append(btn)
 
     def get_values(self):
         command = self._command_entry.get_text().strip()
@@ -276,6 +487,12 @@ class AddJobDialog(Gtk.Dialog):
                 hh = 0
                 mm = 0
             extra["one_time_at"] = f"{y:04d}-{m+1:02d}-{d:02d}T{hh:02d}:{mm:02d}"
+        # Merge any extras provided by NLP
+        if getattr(self, "_nl_extras", None):
+            try:
+                extra.update(self._nl_extras)
+            except Exception:
+                pass
         return command, cron, extra
 
     def _col(self, title: str, widget: Gtk.Widget) -> Gtk.Widget:
@@ -419,16 +636,28 @@ class AddJobDialog(Gtk.Dialog):
         if len(parts) != 5:
             return
         minute, hour, dom, mon, dow = parts
-        # Defaults
-        self._freq_dd.set_selected(0)
-        for btn in self._weekday_buttons:
-            btn.set_active(False)
-        self._hour.set_value(0)
-        self._hour_end.set_value(0)
-        self._minute.set_value(0)
-        self._n_minutes.set_value(5)
-        # Weekly with hour window and selected DOWs
-        def set_dows(dow_field: str):
+
+        def set_grid_from(minute_str: str, hour_field: str, set_end_from_range: bool = False) -> None:
+            try:
+                m = int(minute_str) if minute_str.isdigit() else 0
+                m = (m // 15) * 15
+                if '-' in hour_field:
+                    hs_str, he_str = hour_field.split('-', 1)
+                    hs = int(hs_str) if hs_str.isdigit() else 0
+                    he = int(he_str) if he_str.isdigit() else hs
+                elif hour_field == '*':
+                    hs = 0; he = 0
+                else:
+                    hs = int(hour_field)
+                    he = hs
+                if hasattr(self, "_start_dd"):
+                    self._start_dd.set_selected(max(0, min(95, hs * 4 + (m // 15))))
+                if set_end_from_range and hasattr(self, "_end_dd"):
+                    self._end_dd.set_selected(max(0, min(95, he * 4 + 3)))
+            except Exception:
+                pass
+
+        def set_dows(dow_field: str) -> None:
             if dow_field == "*":
                 return
             for token in dow_field.split(','):
@@ -436,44 +665,29 @@ class AddJobDialog(Gtk.Dialog):
                     idx = int(token)
                     if 0 <= idx <= 6:
                         self._weekday_buttons[idx].set_active(True)
-        # Hour range helper
-        def set_hour_window(hfield: str):
-            if '-' in hfield:
-                try:
-                    s, e = hfield.split('-', 1)
-                    self._hour.set_value(int(s))
-                    self._hour_end.set_value(int(e))
-                except Exception:
-                    pass
-            elif hfield == '*':
-                self._hour.set_value(0)
-                self._hour_end.set_value(0)
-            else:
-                try:
-                    v = int(hfield)
-                    self._hour.set_value(v)
-                    self._hour_end.set_value(v)
-                except Exception:
-                    pass
-        # Detect */N minutes (optionally hour range and DOW list)
+
+        # Reset some defaults
+        for btn in self._weekday_buttons:
+            btn.set_active(False)
+
+        # Every N minutes
         if minute.startswith('*/') and dom == '*' and mon == '*':
             try:
                 n = int(minute[2:])
-                self._freq_dd.set_selected(1)  # Every N minutes
+                self._freq_dd.set_selected(1)
                 self._n_minutes.set_value(max(1, min(59, n)))
-                # Set dropdown window to hours only (minutes align to :00)
                 if '-' in hour:
-                    s,e = hour.split('-',1)
+                    s, e = hour.split('-', 1)
                     s = int(s); e = int(e)
-                    self._start_dd.set_selected(max(0, min(95, s*4)))
-                    self._end_dd.set_selected(max(0, min(95, e*4 + 3)))
+                    self._start_dd.set_selected(max(0, min(95, s * 4)))
+                    self._end_dd.set_selected(max(0, min(95, e * 4 + 3)))
                 elif hour == '*':
                     self._start_dd.set_selected(0)
                     self._end_dd.set_selected(95)
                 set_dows(dow)
             except Exception:
                 pass
-        # Hourly pattern m * * * *
+        # Hourly
         elif hour == '*' and dom == '*' and mon == '*' and dow == '*':
             try:
                 m = int(minute) if minute != '*' else 0
@@ -481,117 +695,67 @@ class AddJobDialog(Gtk.Dialog):
                 self._minute.set_value(m)
             except Exception:
                 pass
-        # Daily m H or H-H2
+        # Daily
         elif dom == '*' and mon == '*' and dow == '*':
             self._freq_dd.set_selected(3)
-            try:
-                self._minute.set_value(int(minute))
-            except Exception:
-                pass
-            # Also sync 15-minute dropdown to closest value
-            try:
-                mv = int(minute)
-                sel_idx = 0 if mv < 8 else 1 if mv < 23 else 2 if mv < 38 else 3
-                self._start_min_dd.set_selected(sel_idx)
-            except Exception:
-                pass
-            # Parse H or H-H2 in 24h to 12h controls
-            def set_hour_window_12(hfield: str):
-                def from24(hv: int):
-                    ampm_idx = 0 if hv < 12 else 1
-                    h12 = hv % 12
-                    if h12 == 0:
-                        h12 = 12
-                    return h12, ampm_idx
-                if '-' in hfield:
-                    try:
-                        s, e = hfield.split('-', 1)
-                        s = int(s); e = int(e)
-                        hs, ams = from24(s)
-                        he, ame = from24(e)
-                        self._hour.set_value(hs)
-                        self._ampm.set_selected(ams)
-                        self._hour_end.set_value(he)
-                        self._ampm_end.set_selected(ame)
-                    except Exception:
-                        pass
-                elif hfield == '*':
-                    self._hour.set_value(12)
-                    self._ampm.set_selected(0)
-                    self._hour_end.set_value(12)
-                    self._ampm_end.set_selected(0)
-                else:
-                    try:
-                        v = int(hfield)
-                        hv, ap = from24(v)
-                        self._hour.set_value(hv)
-                        self._ampm.set_selected(ap)
-                        self._hour_end.set_value(hv)
-                        self._ampm_end.set_selected(ap)
-                    except Exception:
-                        pass
-            set_hour_window_12(hour)
-        # Monthly m H dom
+            set_grid_from(minute, hour)
+        # Monthly
         elif dom != '*' and mon == '*' and dow == '*':
             self._freq_dd.set_selected(6)
-            try:
-                self._minute.set_value(int(minute))
-            except Exception:
-                pass
-            set_hour_window(hour)
+            set_grid_from(minute, hour)
             try:
                 self._dom.set_value(int(dom))
             except Exception:
                 pass
-        # Weekly m H dowlist (fallback)
+        # Weekly / Biweekly
         else:
             self._freq_dd.set_selected(4)
-            try:
-                self._minute.set_value(int(minute))
-            except Exception:
-                pass
-            # Also sync 15-minute dropdown to closest value
-            try:
-                mv = int(minute)
-                sel_idx = 0 if mv < 8 else 1 if mv < 23 else 2 if mv < 38 else 3
-                self._start_min_dd.set_selected(sel_idx)
-            except Exception:
-                pass
-            # Reuse 12h conversion for weekly, same format as daily hour field
-            def set_hour_window_12(hfield: str):
-                def from24(hv: int):
-                    ampm_idx = 0 if hv < 12 else 1
-                    h12 = hv % 12
-                    if h12 == 0:
-                        h12 = 12
-                    return h12, ampm_idx
-                if '-' in hfield:
-                    try:
-                        s, e = hfield.split('-', 1)
-                        s = int(s); e = int(e)
-                        hs, ams = from24(s)
-                        he, ame = from24(e)
-                        self._hour.set_value(hs)
-                        self._ampm.set_selected(ams)
-                        self._hour_end.set_value(he)
-                        self._ampm_end.set_selected(ame)
-                    except Exception:
-                        pass
-                elif hfield == '*':
-                    self._hour.set_value(12)
-                    self._ampm.set_selected(0)
-                    self._hour_end.set_value(12)
-                    self._ampm_end.set_selected(0)
-                else:
-                    try:
-                        v = int(hfield)
-                        hv, ap = from24(v)
-                        self._hour.set_value(hv)
-                        self._ampm.set_selected(ap)
-                        self._hour_end.set_value(hv)
-                        self._ampm_end.set_selected(ap)
-                    except Exception:
-                        pass
-            set_hour_window_12(hour)
+            set_grid_from(minute, hour)
             set_dows(dow)
+
         self._update_builder_visibility()
+
+    # Detect */N minutes (optionally hour range and DOW list)
+    # if minute.startswith('*/') and dom == '*' and mon == '*':
+    #     try:
+    #         n = int(minute[2:])
+    #         self._freq_dd.set_selected(1)  # Every N minutes
+    #         self._n_minutes.set_value(max(1, min(59, n)))
+    #         # Set dropdown window to hours only (minutes align to :00)
+    #         if '-' in hour:
+    #             s,e = hour.split('-',1)
+    #             s = int(s); e = int(e)
+    #             self._start_dd.set_selected(max(0, min(95, s*4)))
+    #             self._end_dd.set_selected(max(0, min(95, e*4 + 3)))
+    #         elif hour == '*':
+    #             self._start_dd.set_selected(0)
+    #             self._end_dd.set_selected(95)
+    #         set_dows(dow)
+    #     except Exception:
+    #         pass
+    # # Hourly pattern m * * * *
+    # elif hour == '*' and dom == '*' and mon == '*' and dow == '*':
+    #     try:
+    #         m = int(minute) if minute != '*' else 0
+    #         self._freq_dd.set_selected(2)
+    #         self._minute.set_value(m)
+    #     except Exception:
+    #         pass
+    # # Daily m H or H-H2
+    # elif dom == '*' and mon == '*' and dow == '*':
+    #     self._freq_dd.set_selected(3)
+    #     set_grid_from(minute, hour)
+    # # Monthly m H dom
+    # elif dom != '*' and mon == '*' and dow == '*':
+    #     self._freq_dd.set_selected(6)
+    #     set_grid_from(minute, hour)
+    #     try:
+    #         self._dom.set_value(int(dom))
+    #     except Exception:
+    #         pass
+    # # Weekly m H dowlist (fallback)
+    # else:
+    #     self._freq_dd.set_selected(4)
+    #     set_grid_from(minute, hour)
+    #     set_dows(dow)
+    # self._update_builder_visibility()
