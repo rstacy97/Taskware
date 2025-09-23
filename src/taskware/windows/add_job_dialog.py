@@ -3,7 +3,7 @@ from taskware.utils.nl2cron import nl_to_cron_with_suggestions, nl_to_cron_and_e
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, Gio, GLib, Gdk
 
 
 class AddJobDialog(Gtk.Dialog):
@@ -22,6 +22,7 @@ class AddJobDialog(Gtk.Dialog):
         except Exception:
             pass
 
+        # Root: single column layout (no side panel to avoid layout issues)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self.get_content_area().append(box)
 
@@ -97,6 +98,12 @@ class AddJobDialog(Gtk.Dialog):
         self._cmd_pop.set_child(tmpl_box)
         self._cmd_menu_btn.set_popover(self._cmd_pop)
         cmd_row.append(self._cmd_menu_btn)
+        # AI button: open helper in a small external window (Firefox preferred)
+        AI_URL = "https://chatgpt.com/g/g-68d2f08efca88191957b61fd0237124c-taskware-cron-command-generator"
+        self._ai_btn = Gtk.Button.new_with_label("AI")
+        self._ai_btn.set_tooltip_text("Open AI assistant to generate cron commands")
+        self._ai_btn.connect("clicked", lambda *_: self._open_ai_external(AI_URL))
+        cmd_row.append(self._ai_btn)
         box.append(cmd_row)
 
         # (Removed) Natural language schedule field
@@ -107,6 +114,7 @@ class AddJobDialog(Gtk.Dialog):
         builder_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
         builder_frame.set_child(builder_box)
         box.append(builder_frame)
+
 
         # Frequency dropdown
         self._freq_model = Gtk.StringList.new([
@@ -576,6 +584,80 @@ class AddJobDialog(Gtk.Dialog):
             except Exception:
                 pass
         return command, cron, extra
+
+    def _open_ai_external(self, url: str) -> None:
+        """Open the URL in a new browser window sized for chat.
+        Prefers Chromium-family app mode for reliable sizing; then Firefox with size hints.
+        This helper does not touch any scheduler UI.
+        """
+        # Desired size
+        W, H = 686, 765
+        # Compute a right-edge position when possible
+        pos_x, pos_y = 100, 120
+        try:
+            display = Gdk.Display.get_default()
+            if display:
+                monitor = display.get_primary_monitor() or display.get_monitor(0)
+                if monitor:
+                    geo = monitor.get_geometry()
+                    # Place near right edge with small margin
+                    pos_x = max(0, geo.x + geo.width - W - 24)
+                    pos_y = max(0, geo.y + 120)
+        except Exception:
+            pass
+        # Prefer Chromium-family with app mode for stable sizing
+        try:
+            for bin_name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser"):
+                if GLib.find_program_in_path(bin_name):
+                    argv = [
+                        bin_name,
+                        "--new-window",
+                        f"--app={url}",
+                        f"--window-size={W},{H}",
+                        f"--window-position={pos_x},{pos_y}",
+                    ]
+                    Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+                    # Post-position on X11 if wmctrl is present (some WMs ignore flags)
+                    if GLib.getenv("XDG_SESSION_TYPE") == "x11" and GLib.find_program_in_path("wmctrl"):
+                        try:
+                            # Try common classes
+                            classes = [
+                                "chromium.Chromium",
+                                "google-chrome.Google-chrome",
+                                "brave-browser.Brave-browser",
+                            ]
+                            for cls in classes:
+                                Gio.Subprocess.new([
+                                    "bash","-lc",
+                                    f"sleep 0.5; wmctrl -x -r {cls} -e 0,{pos_x},{pos_y},{W},{H} || true"
+                                ], Gio.SubprocessFlags.NONE)
+                        except Exception:
+                            pass
+                    return
+        except Exception:
+            pass
+        # Firefox with size hints; may be ignored by some Wayland sessions
+        try:
+            if GLib.find_program_in_path("firefox"):
+                Gio.Subprocess.new(["firefox", "--new-window", url, "--width", str(W), "--height", str(H)], Gio.SubprocessFlags.NONE)
+                # Best-effort resize on X11 via wmctrl if available
+                if GLib.find_program_in_path("wmctrl"):
+                    try:
+                        Gio.Subprocess.new([
+                            "bash",
+                            "-lc",
+                            f"sleep 0.8; wmctrl -x -r firefox.Firefox -b remove,maximized_vert,maximized_horz; wmctrl -x -r firefox.Firefox -e 0,{pos_x},{pos_y},{W},{H}",
+                        ], Gio.SubprocessFlags.NONE)
+                    except Exception:
+                        pass
+                return
+        except Exception:
+            pass
+        # Fallback
+        try:
+            Gio.AppInfo.launch_default_for_uri(url)
+        except Exception:
+            pass
 
     def _col(self, title: str, widget: Gtk.Widget) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)

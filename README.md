@@ -30,6 +30,16 @@ python3 -m venv .venv
 pip install -e .
 ```
 
+### Optional (for AI helper window sizing)
+Chromium or a Chromium-based browser is recommended so the AI helper window can open at a specific size/position reliably:
+
+```bash
+# One option on Ubuntu
+sudo snap install chromium
+```
+
+Firefox works too, but some Wayland sessions ignore window size/position hints.
+
 ## Run
 
 ```bash
@@ -72,16 +82,41 @@ src/
     __main__.py
     windows/
       main_window.py
+      add_job_dialog.py
+      salt_settings_dialog.py
     backend/
       __init__.py
       cron.py
+      salt_exporter.py
 ```
 
+## Features
+- Natural-language scheduling with fallback parsing for times like "noon", "midnight", and compact AM/PM inputs (e.g., `5p`, `7:15a`).
+- Weekday phrases including combined days (e.g., "every monday, wednesday and thursday") and biweekly ("every other tuesday").
+- Schedule builder keeps UI and cron in sync and supports a time window for every minute / every N minutes / hourly modes.
+- AI button next to the Command field opens a small external browser window to a cron command generator.
+- Discreet Settings (gear icon) includes a Salt Integration dialog to export Taskware jobs as Salt states (SLS).
+
+## AI Assistant
+- Click the "AI" button on the Add Job dialog (next to the Command field).
+  - If Chromium/Chrome/Brave is installed, Taskware opens a small app-style window (~686×765) near the right edge.
+  - If only Firefox is present, Taskware requests a smaller sized window. Some Wayland setups may ignore these size/position hints.
+  - The page cannot be embedded due to site security policies; it opens in the system browser by design.
+
+Troubleshooting (AI window sizing)
+- If Firefox opens full size or centered on Wayland, install Chromium for reliable sizing:
+  - `sudo snap install chromium`
+
+## Salt Integration (Optional)
+- Open the gear icon in the main window to access Salt Integration settings.
+- You can configure master URL/auth and generate SLS files for your current user jobs to a directory you choose.
+- Exported SLS uses `cron.present`. Biweekly jobs include a lightweight wrapper script and a weekly cron entry.
+- Future options may include push via `salt-api`, `salt-ssh`, or GitFS.
+
 ## Next Steps (Roadmap excerpt)
-- Add crontab parsing/writing for user jobs.
-- Add natural language → cron conversion.
-- Introduce systemd timers via D-Bus and polkit flows.
+- Push-to-Salt flows via `salt-api` or `salt-ssh` (apply/remove, dry-run/test mode).
 - Calendar/timeline view and job details with logs.
+- Systemd timers via D-Bus and polkit flows.
 
 ## License
 GPL-3.0-or-later

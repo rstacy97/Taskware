@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from ..backend.cron import list_user_jobs, add_user_job, set_user_job_enabled, delete_user_job, update_user_job
 from .add_job_dialog import AddJobDialog
+from .salt_settings_dialog import SaltSettingsDialog
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -97,6 +98,12 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._refresh_btn.connect("clicked", self._on_refresh_clicked)
 
+        # Settings (gear) button for integrations (e.g., Salt). Keeps UI uncluttered
+        self._settings_btn = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
+        self._settings_btn.set_tooltip_text("Settings & Integrations")
+        self._settings_btn.connect("clicked", self._on_settings_clicked)
+
+        header.pack_end(self._settings_btn)
         header.pack_end(self._refresh_btn)
         header.pack_end(self._add_btn)
 
@@ -314,6 +321,13 @@ class MainWindow(Adw.ApplicationWindow):
         dlg = AddJobDialog(self)
         dlg.connect("response", self._on_add_dialog_response)
         dlg.present()
+
+    def _on_settings_clicked(self, *_):
+        try:
+            dlg = SaltSettingsDialog(self)
+            dlg.present()
+        except Exception as e:
+            self._toast(f"Failed to open settings: {e}")
 
     def _on_add_dialog_response(self, dlg: AddJobDialog, response_id: int) -> None:
         if response_id != Gtk.ResponseType.OK:
