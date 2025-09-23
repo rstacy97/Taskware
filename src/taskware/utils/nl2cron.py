@@ -246,6 +246,18 @@ def nl_to_cron_and_extras(text: str, max_suggestions: int = 3) -> Tuple[Optional
                     extras["biweekly"] = True
                 extras.update(_cron_to_extras(cron))
                 return cron, extras, []
+    # Single weekday with time and biweekly: "every other tuesday at 5 pm"
+    m = re.match(r"^every\s+other\s+([a-z]+)\s+at\s+(.+)$", s)
+    if m:
+        day = m.group(1)
+        tm = _parse_time(m.group(2))
+        if tm and day in WEEKDAYS:
+            h, mi = tm
+            wd = WEEKDAYS[day]
+            cron = f"{mi} {h} * * {wd}"
+            extras["biweekly"] = True
+            extras.update(_cron_to_extras(cron))
+            return cron, extras, []
     # Recognize weekday-only phrases (single or multiple), e.g.,
     # "every monday" or "every monday, wednesday and thursday"
     # and biweekly variant: "every other saturday and sunday"

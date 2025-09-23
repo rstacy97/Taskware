@@ -354,6 +354,12 @@ class AddJobDialog(Gtk.Dialog):
             self._apply_cron_to_builder(cron)
             # Stash extras (e.g., biweekly) for submit
             self._nl_extras = extras or {}
+            # If NL indicates biweekly, enforce Biweekly selection (index 5)
+            try:
+                if bool(self._nl_extras.get("biweekly")):
+                    self._freq_dd.set_selected(5)
+            except Exception:
+                pass
             self._validate()
             return
         # No cron parsed; apply extras-only hints if present (weekday/biweekly), else clear
@@ -380,6 +386,12 @@ class AddJobDialog(Gtk.Dialog):
                 pass
             # With frequency/weekday set, rebuild cron from current grid/time
             self._apply_builder_to_cron()
+            # Re-enforce Biweekly selection if indicated
+            try:
+                if bool(self._nl_extras.get("biweekly")):
+                    self._freq_dd.set_selected(5)
+            except Exception:
+                pass
             self._validate()
         # Even without a full parse, try to set context (frequency) and time from keywords
         lower = text.lower()
@@ -822,7 +834,11 @@ class AddJobDialog(Gtk.Dialog):
             self._window_chk.set_active(True)
         # Weekly / Biweekly
         else:
-            self._freq_dd.set_selected(4)
+            try:
+                is_biweekly = bool(getattr(self, "_nl_extras", {}).get("biweekly"))
+            except Exception:
+                is_biweekly = False
+            self._freq_dd.set_selected(5 if is_biweekly else 4)
             set_grid_from(minute, hour)
             set_dows(dow)
             self._window_chk.set_active(True)
