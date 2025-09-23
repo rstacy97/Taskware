@@ -13,6 +13,15 @@ class AddJobDialog(Gtk.Dialog):
         self.set_default_size(640, 700)
         self._suppress_builder = False
 
+        # Gently delay tooltips so they don't pop immediately on hover
+        try:
+            settings = Gtk.Settings.get_default()
+            if settings is not None and hasattr(settings.props, "gtk_tooltip_timeout"):
+                # milliseconds; ~1.5 second delay
+                settings.props.gtk_tooltip_timeout = 1500
+        except Exception:
+            pass
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         self.get_content_area().append(box)
 
@@ -29,10 +38,66 @@ class AddJobDialog(Gtk.Dialog):
         self._sugg_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         box.append(self._sugg_box)
 
-        # Command entry
-        self._command_entry = Gtk.Entry(placeholder_text="Command to run, e.g. /usr/bin/backup --quick")
+        # Command entry with inline templates menu button
         box.append(Gtk.Label(label="Command"))
-        box.append(self._command_entry)
+        cmd_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._command_entry = Gtk.Entry(placeholder_text="Command to run, e.g. /usr/bin/backup --quick")
+        self._command_entry.set_hexpand(True)
+        cmd_row.append(self._command_entry)
+        # Menu button with templates
+        self._cmd_menu_btn = Gtk.MenuButton()
+        try:
+            # Use a down arrow style icon; fallback to text arrow if unavailable
+            self._cmd_menu_btn.set_icon_name("pan-down-symbolic")
+        except Exception:
+            try:
+                self._cmd_menu_btn.set_label("▼")
+            except Exception:
+                self._cmd_menu_btn.set_label("Templates")
+        # Build popover with template buttons
+        self._cmd_pop = Gtk.Popover()
+        tmpl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        templates = [
+            "/usr/bin/echo 'Hello from Taskware'",
+            "/usr/bin/notify-send 'Taskware' 'Scheduled job ran'",
+            "/usr/bin/rsync -av --dry-run ~/Documents/ /path/to/backup/Documents/",
+            "/usr/bin/find ~/Downloads -type f -name '*.tmp' -mtime +7 -print",
+            "/usr/bin/curl -fsSL https://example.com/health || exit 1",
+            "/usr/bin/python3 /path/to/script.py",
+            "/usr/bin/bash -lc 'date >> ~/taskware_run.log'",
+        ]
+        template_tooltips = {
+            "/usr/bin/echo 'Hello from Taskware'": "Simple test command that prints a message to stdout.",
+            "/usr/bin/notify-send 'Taskware' 'Scheduled job ran'": "Desktop notification to confirm the job ran (requires notify-send).",
+            "/usr/bin/rsync -av --dry-run ~/Documents/ /path/to/backup/Documents/": "Preview rsync of Documents to backup (dry-run, no changes; note trailing slashes).",
+            "/usr/bin/find ~/Downloads -type f -name '*.tmp' -mtime +7 -print": "List .tmp files older than 7 days in Downloads (non-destructive).",
+            "/usr/bin/curl -fsSL https://example.com/health || exit 1": "Perform an HTTP health check; fail the job if the endpoint is unhealthy.",
+            "/usr/bin/python3 /path/to/script.py": "Run a Python script (replace with your script's path).",
+            "/usr/bin/bash -lc 'date >> ~/taskware_run.log'": "Append the current date to a log file in your home directory.",
+        }
+        for tpl in templates:
+            b = Gtk.Button.new_with_label(tpl)
+            b.set_halign(Gtk.Align.FILL)
+            b.set_hexpand(True)
+            try:
+                desc = template_tooltips.get(tpl)
+                if desc:
+                    b.set_tooltip_text(desc)
+            except Exception:
+                pass
+            def _on_tpl_clicked(_btn, text=tpl):
+                self._command_entry.set_text(text)
+                try:
+                    self._cmd_pop.popdown()
+                except Exception:
+                    pass
+                self._validate()
+            b.connect("clicked", _on_tpl_clicked)
+            tmpl_box.append(b)
+        self._cmd_pop.set_child(tmpl_box)
+        self._cmd_menu_btn.set_popover(self._cmd_pop)
+        cmd_row.append(self._cmd_menu_btn)
+        box.append(cmd_row)
 
         # (Removed) Natural language schedule field
 
