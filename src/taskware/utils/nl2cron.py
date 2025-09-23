@@ -28,6 +28,8 @@ EXAMPLE_PHRASES = [
     "every day at 9 am",
     "every monday at 6 pm",
     "every 15 minutes",
+    "every minute",
+    "each minute",
     "every hour",
     "daily at 02:30",
     "weekly on sunday at 07:00",
@@ -80,6 +82,10 @@ def _nl_to_cron_core(s: str) -> Optional[str]:
         n = int(m.group(1))
         if 1 <= n <= 59:
             return f"*/{n} * * * *"
+
+    # every minute / each minute
+    if s in ("every minute", "each minute"):
+        return "* * * * *"
 
     # every hour
     if s in ("every hour", "hourly"):

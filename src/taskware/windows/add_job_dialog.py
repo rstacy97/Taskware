@@ -211,6 +211,11 @@ class AddJobDialog(Gtk.Dialog):
         self._start_dd.set_selected(0)
         self._end_dd.set_selected(95)
         en_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # Time window enable checkbox (applies to Every N minutes and Hourly)
+        self._window_chk = Gtk.CheckButton.new_with_label("Limit to time window")
+        self._window_chk.set_active(False)
+        self._window_chk.connect("toggled", self._on_builder_changed)
+        en_box.append(self._window_chk)
         en_box.append(Gtk.Label(label="Start"))
         en_box.append(self._start_dd)
         en_box.append(Gtk.Label(label="End"))
@@ -622,7 +627,7 @@ class AddJobDialog(Gtk.Dialog):
         self._row_weekdays.set_visible(weekly or every_n or hourly)
         self._row_time_window.set_visible(False)
         self._row_every_n.set_visible(every_n)
-        self._row_en_window.set_visible(daily or weekly or monthly or onetime or every_n or hourly)
+        self._row_en_window.set_visible(daily or weekly or monthly or onetime or every_n or hourly or every_minute)
         self._row_dom.set_visible(monthly)
         self._row_biweekly_chk.set_visible(False)  # no longer used; keep hidden
         self._row_biweekly_anchor.set_visible(biweekly)
@@ -638,9 +643,15 @@ class AddJobDialog(Gtk.Dialog):
         self._end_min_dd.set_visible(False)
         # Inner widgets: 24h grid always visible when time window row is visible
         self._n_minutes.set_visible(every_n)
-        self._start_dd.set_visible(daily or weekly or monthly or onetime or every_n or hourly)
-        # End time only relevant for Every N minutes and Hourly; others are single-time
-        self._end_dd.set_visible(every_n or hourly)
+        self._start_dd.set_visible(daily or weekly or monthly or onetime or every_n or hourly or every_minute)
+        # Window checkbox relevant for Every minute, Every N minutes and Hourly
+        self._window_chk.set_visible(every_minute or every_n or hourly)
+        # End time relevant for Every minute, Every N minutes and Hourly; others are single-time
+        self._end_dd.set_visible(every_minute or every_n or hourly)
+        # Enable/disable Start/End based on checkbox for applicable modes
+        use_window = self._window_chk.get_active() if (every_minute or every_n or hourly) else True
+        self._start_dd.set_sensitive(True if (daily or weekly or monthly or onetime) else use_window)
+        self._end_dd.set_sensitive(use_window)
         # Inner calendars visibility (row visibility already controls labels)
         self._biweekly_anchor_cal.set_visible(biweekly)
         self._once_cal.set_visible(onetime)
@@ -665,7 +676,16 @@ class AddJobDialog(Gtk.Dialog):
         dows = [str(i) for i, btn in enumerate(self._weekday_buttons) if btn.get_active()]
         dow_field = ",".join(dows) if dows else "*"
         if sel == 0:  # Every minute
-            cron = "* * * * *"
+            # If time window is enabled, restrict hours; otherwise all hours
+            if self._window_chk.get_active():
+                s_idx = int(self._start_dd.get_selected())
+                e_idx = int(self._end_dd.get_selected())
+                s_h, s_m = (s_idx // 4, (s_idx % 4) * 15)
+                e_h, e_m = (e_idx // 4, (e_idx % 4) * 15)
+                hour_field = f"{s_h}-{e_h}" if e_h >= s_h else "*"
+                cron = f"* {hour_field} * * *"
+            else:
+                cron = "* * * * *"
         elif sel == 1:  # Every N minutes with human-readable window and optional DOWs
             n = max(1, min(59, n))
             # Map dropdowns to hour range; minute offsets aren't compatible with */N in plain cron
@@ -673,13 +693,20 @@ class AddJobDialog(Gtk.Dialog):
             e_idx = int(self._end_dd.get_selected())
             s_h, s_m = (s_idx // 4, (s_idx % 4) * 15)
             e_h, e_m = (e_idx // 4, (e_idx % 4) * 15)
-            hour_field = f"{s_h}-{e_h}" if e_h >= s_h else "*"
+            # Apply window only if enabled; otherwise full day
+            if self._window_chk.get_active():
+                hour_field = f"{s_h}-{e_h}" if e_h >= s_h else "*"
+            else:
+                hour_field = "*"
             cron = f"*/{n} {hour_field} * * {dow_field}"
             # If a non-zero start minute was chosen, inform user in preview that cron alignment is on :00
             if s_m != 0 or e_m != 45:
                 self._preview.set_text("Note: Cron runs every N minutes aligned to :00; minute offsets in window are not represented.")
         elif sel == 2:  # Hourly within time window at start-minute, with weekdays
-            hour_field = f"{s_h}-{e_h}" if e_h >= s_h else str(s_h)
+            if self._window_chk.get_active():
+                hour_field = f"{s_h}-{e_h}" if e_h >= s_h else str(s_h)
+            else:
+                hour_field = "*"
             cron = f"{m} {hour_field} * * {dow_field}"
         elif sel == 3:  # Daily at start time (single hour)
             cron = f"{m} {s_h} * * *"
@@ -735,8 +762,24 @@ class AddJobDialog(Gtk.Dialog):
         for btn in self._weekday_buttons:
             btn.set_active(False)
 
+        # Every minute (all fields '*') or with hour window
+        if minute == '*' and dom == '*' and mon == '*' and dow == '*':
+            self._freq_dd.set_selected(0)
+            if '-' in hour:
+                try:
+                    s, e = hour.split('-', 1)
+                    s = int(s); e = int(e)
+                    self._start_dd.set_selected(max(0, min(95, s * 4)))
+                    self._end_dd.set_selected(max(0, min(95, e * 4 + 3)))
+                    self._window_chk.set_active(True)
+                except Exception:
+                    pass
+            elif hour == '*':
+                # Full day, disable window
+                self._window_chk.set_active(False)
+            # nothing else to set
         # Every N minutes
-        if minute.startswith('*/') and dom == '*' and mon == '*':
+        elif minute.startswith('*/') and dom == '*' and mon == '*':
             try:
                 n = int(minute[2:])
                 self._freq_dd.set_selected(1)
@@ -746,9 +789,11 @@ class AddJobDialog(Gtk.Dialog):
                     s = int(s); e = int(e)
                     self._start_dd.set_selected(max(0, min(95, s * 4)))
                     self._end_dd.set_selected(max(0, min(95, e * 4 + 3)))
+                    self._window_chk.set_active(True)
                 elif hour == '*':
                     self._start_dd.set_selected(0)
                     self._end_dd.set_selected(95)
+                    self._window_chk.set_active(False)
                 set_dows(dow)
             except Exception:
                 pass
@@ -758,12 +803,14 @@ class AddJobDialog(Gtk.Dialog):
                 m = int(minute) if minute != '*' else 0
                 self._freq_dd.set_selected(2)
                 self._minute.set_value(m)
+                self._window_chk.set_active(False)
             except Exception:
                 pass
         # Daily
         elif dom == '*' and mon == '*' and dow == '*':
             self._freq_dd.set_selected(3)
             set_grid_from(minute, hour)
+            self._window_chk.set_active(True)
         # Monthly
         elif dom != '*' and mon == '*' and dow == '*':
             self._freq_dd.set_selected(6)
@@ -772,55 +819,12 @@ class AddJobDialog(Gtk.Dialog):
                 self._dom.set_value(int(dom))
             except Exception:
                 pass
+            self._window_chk.set_active(True)
         # Weekly / Biweekly
         else:
             self._freq_dd.set_selected(4)
             set_grid_from(minute, hour)
             set_dows(dow)
+            self._window_chk.set_active(True)
 
         self._update_builder_visibility()
-
-    # Detect */N minutes (optionally hour range and DOW list)
-    # if minute.startswith('*/') and dom == '*' and mon == '*':
-    #     try:
-    #         n = int(minute[2:])
-    #         self._freq_dd.set_selected(1)  # Every N minutes
-    #         self._n_minutes.set_value(max(1, min(59, n)))
-    #         # Set dropdown window to hours only (minutes align to :00)
-    #         if '-' in hour:
-    #             s,e = hour.split('-',1)
-    #             s = int(s); e = int(e)
-    #             self._start_dd.set_selected(max(0, min(95, s*4)))
-    #             self._end_dd.set_selected(max(0, min(95, e*4 + 3)))
-    #         elif hour == '*':
-    #             self._start_dd.set_selected(0)
-    #             self._end_dd.set_selected(95)
-    #         set_dows(dow)
-    #     except Exception:
-    #         pass
-    # # Hourly pattern m * * * *
-    # elif hour == '*' and dom == '*' and mon == '*' and dow == '*':
-    #     try:
-    #         m = int(minute) if minute != '*' else 0
-    #         self._freq_dd.set_selected(2)
-    #         self._minute.set_value(m)
-    #     except Exception:
-    #         pass
-    # # Daily m H or H-H2
-    # elif dom == '*' and mon == '*' and dow == '*':
-    #     self._freq_dd.set_selected(3)
-    #     set_grid_from(minute, hour)
-    # # Monthly m H dom
-    # elif dom != '*' and mon == '*' and dow == '*':
-    #     self._freq_dd.set_selected(6)
-    #     set_grid_from(minute, hour)
-    #     try:
-    #         self._dom.set_value(int(dom))
-    #     except Exception:
-    #         pass
-    # # Weekly m H dowlist (fallback)
-    # else:
-    #     self._freq_dd.set_selected(4)
-    #     set_grid_from(minute, hour)
-    #     set_dows(dow)
-    # self._update_builder_visibility()
