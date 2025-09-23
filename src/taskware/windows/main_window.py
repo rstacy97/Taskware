@@ -21,6 +21,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._toast_overlay = Adw.ToastOverlay()
         self.set_content(self._toast_overlay)
         self._root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # Allow content to occupy full window area
+        self._root_box.set_hexpand(True)
+        self._root_box.set_vexpand(True)
         self._toast_overlay.set_child(self._root_box)
 
         # Install simple CSS for timestamp coloring/sizing
@@ -56,6 +59,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # View switcher
         self._stack = Gtk.Stack()
+        self._stack.set_hexpand(True)
         self._stack.set_vexpand(True)
         switcher = Gtk.StackSwitcher()
         switcher.set_stack(self._stack)
@@ -119,6 +123,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_user_jobs_page(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        box.set_hexpand(True)
+        box.set_vexpand(True)
 
         # Store and view for user jobs
         self._user_store = Gio.ListStore(item_type=JobRow)
@@ -129,7 +135,16 @@ class MainWindow(Adw.ApplicationWindow):
         factory.connect("bind", self._on_bind)
         selection = Gtk.NoSelection(model=self._user_store)
         self._user_list_view = Gtk.ListView(model=selection, factory=factory)
+        self._user_list_view.set_hexpand(True)
+        self._user_list_view.set_vexpand(True)
         self._user_scroller = Gtk.ScrolledWindow()
+        self._user_scroller.set_hexpand(True)
+        self._user_scroller.set_vexpand(True)
+        try:
+            from gi.repository import Gtk as _Gtk  # type: ignore
+            self._user_scroller.set_policy(_Gtk.PolicyType.NEVER, _Gtk.PolicyType.AUTOMATIC)
+        except Exception:
+            pass
         self._user_scroller.set_child(self._user_list_view)
 
         # Empty state page
@@ -149,6 +164,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Stack to swap between empty page and list
         self._user_stack = Gtk.Stack()
+        self._user_stack.set_hexpand(True)
+        self._user_stack.set_vexpand(True)
         self._user_stack.add_named(self._empty_page, "empty")
         self._user_stack.add_named(self._user_scroller, "list")
         box.append(self._user_stack)
