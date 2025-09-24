@@ -536,9 +536,9 @@ class AddJobDialog(Gtk.Dialog):
         constraints_enabled = bool(self._constraints_chk.get_active())
         if constraints_enabled:
             tz = self._tz_model.get_string(self._tz_dd.get_selected()) or "System default"
-            # Calendar returns year, month (0-based), day
-            y1, m1, d1 = self._start_cal.get_date()
-            y2, m2, d2 = self._end_cal.get_date()
+            # Normalize GLib.DateTime or tuple into (Y, M, D)
+            y1, m1, d1 = self._cal_ymd(self._start_cal)
+            y2, m2, d2 = self._cal_ymd(self._end_cal)
             extra = {
                 "constraints_enabled": True,
                 "timezone": tz,
@@ -553,12 +553,12 @@ class AddJobDialog(Gtk.Dialog):
         sel = self._freq_dd.get_selected()
         if sel == 5:
             extra["biweekly"] = True
-            y, m, d = self._biweekly_anchor_cal.get_date()
-            extra["biweekly_anchor"] = f"{y:04d}-{m+1:02d}-{d:02d}"
+            y, m, d = self._cal_ymd(self._biweekly_anchor_cal)
+            extra["biweekly_anchor"] = f"{y:04d}-{m:02d}-{d:02d}"
         # Include one-time settings (use Start dropdown for time)
         if sel == 7:
             extra["one_time"] = True
-            y, m, d = self._once_cal.get_date()
+            y, m, d = self._cal_ymd(self._once_cal)
             idx = int(self._start_min_dd.get_selected())
             # If Start/End dropdowns represent full day timeline, compute hour/min from index
             # Our model encodes 0..95 for Every-N mode; for unified use we map selected to 0,15,30,45 minutes at current hour selection via index*15
@@ -576,7 +576,7 @@ class AddJobDialog(Gtk.Dialog):
             except Exception:
                 hh = 0
                 mm = 0
-            extra["one_time_at"] = f"{y:04d}-{m+1:02d}-{d:02d}T{hh:02d}:{mm:02d}"
+            extra["one_time_at"] = f"{y:04d}-{m:02d}-{d:02d}T{hh:02d}:{mm:02d}"
         # Merge any extras provided by NLP
         if getattr(self, "_nl_extras", None):
             try:
@@ -671,6 +671,32 @@ class AddJobDialog(Gtk.Dialog):
         box.append(Gtk.Label(label=title, xalign=0))
         box.append(widget)
         return box
+
+    def _cal_ymd(self, cal: Gtk.Calendar) -> tuple[int, int, int]:
+        """Normalize Gtk.Calendar.get_date() to (Y, M, D) with 1-based month.
+        GTK4 returns GLib.DateTime; older GTK returned (Y, M0, D) with 0-based month.
+        """
+        try:
+            dt = cal.get_date()
+            # GLib.DateTime path
+            year = dt.get_year()
+            month = dt.get_month()  # 1..12
+            day = dt.get_day_of_month()
+            return int(year), int(month), int(day)
+        except Exception:
+            pass
+        # Tuple/list fallback
+        try:
+            y, m, d = cal.get_date()
+            # if month looks 0-based, shift to 1-based
+            if 0 <= int(m) <= 11:
+                m = int(m) + 1
+            return int(y), int(m), int(d)
+        except Exception:
+            # As a last resort, return today's date via GLib
+            from datetime import datetime as _dt
+            now = _dt.now()
+            return now.year, now.month, now.day
 
     # Prefill values when editing an existing job
     def set_initial(self, command: str, cron: str, description: str | None = None) -> None:

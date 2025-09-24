@@ -355,7 +355,8 @@ class MainWindow(Adw.ApplicationWindow):
             description = extra.get("description") if isinstance(extra, dict) else None
             added = add_user_job(cron, command, description)
             self._refresh_user_jobs()
-            self._toast(f"Added job: {added['command']}")
+            title = (description or added.get('command') or '').strip()
+            self._toast(f"Job added{': ' + self._shorten(title) if title else ''}")
         except Exception as e:
             self._toast(f"Failed to add job: {e}")
         finally:
@@ -379,7 +380,7 @@ class MainWindow(Adw.ApplicationWindow):
             description = extra.get("description") if isinstance(extra, dict) else None
             updated = update_user_job(item.job_id, cron, command, description)
             self._refresh_user_jobs()
-            self._toast(f"Job updated — {cron}")
+            self._toast("Job updated")
         except Exception as e:
             self._toast(f"Failed to update: {e}")
         finally:
@@ -389,7 +390,7 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             set_user_job_enabled(item.job_id, bool(state))
             item.enabled = bool(state)
-            self._toast(("Enabled" if item.enabled else "Disabled") + f" — {item.command}")
+            self._toast("Enabled" if item.enabled else "Disabled")
             return False  # allow state change to proceed
         except Exception as e:
             # revert UI by denying the state change
@@ -397,7 +398,33 @@ class MainWindow(Adw.ApplicationWindow):
             return True  # prevent the state change
 
     def _toast(self, message: str) -> None:
-        self._toast_overlay.add_toast(Adw.Toast.new(message))
+        try:
+            msg = str(message).strip()
+        except Exception:
+            msg = ""
+        if not msg:
+            msg = "Done"
+        try:
+            toast = Adw.Toast.new(msg)
+            # Be explicit to avoid markup/theme issues
+            if hasattr(toast, "set_use_markup"):
+                toast.set_use_markup(False)
+            if hasattr(toast, "set_timeout"):
+                toast.set_timeout(3)
+            self._toast_overlay.add_toast(toast)
+        except Exception:
+            # Fallback
+            self._toast_overlay.add_toast(Adw.Toast.new("Done"))
+
+    def _shorten(self, text: str, max_len: int = 80) -> str:
+        try:
+            s = str(text)
+        except Exception:
+            return ""
+        s = s.replace("\n", " ").replace("\r", " ")
+        if len(s) <= max_len:
+            return s
+        return s[: max_len - 1] + "…"
 
     # -------- System Jobs (systemd timers) --------
     def _refresh_system_jobs(self) -> None:
