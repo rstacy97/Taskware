@@ -105,6 +105,15 @@ class AddJobDialog(Gtk.Dialog):
         self._ai_btn.connect("clicked", lambda *_: self._open_ai_external(AI_URL))
         cmd_row.append(self._ai_btn)
         box.append(cmd_row)
+        # Risk warning label (red), hidden by default
+        self._cmd_warn = Gtk.Label(label="")
+        try:
+            self._cmd_warn.set_use_markup(True)
+        except Exception:
+            pass
+        self._cmd_warn.set_xalign(0)
+        self._cmd_warn.add_css_class("error") if hasattr(self._cmd_warn, "add_css_class") else None
+        box.append(self._cmd_warn)
 
         # (Removed) Natural language schedule field
 
@@ -279,7 +288,7 @@ class AddJobDialog(Gtk.Dialog):
 
         # Signals
         self._cron_entry.connect("changed", self._validate)
-        self._command_entry.connect("changed", self._validate)
+        self._command_entry.connect("changed", self._on_command_changed)
         # Builder signals
         self._freq_dd.connect("notify::selected", self._on_builder_changed)
         self._hour.connect("value-changed", self._on_builder_changed)
@@ -310,12 +319,100 @@ class AddJobDialog(Gtk.Dialog):
         self._nl_extras: dict[str, object] = {}
         self._apply_builder_to_cron()
 
+    def _on_command_changed(self, *_):
+        self._update_command_warning()
+        self._validate()
+
     # (Removed) Natural language change handler
 
     def _validate(self, *_):
         cmd_ok = bool(self._command_entry.get_text().strip())
         cron_ok = len(self._cron_entry.get_text().strip().split()) == 5
         self._add_btn.set_sensitive(cmd_ok and cron_ok)
+        # update warning as part of validation cycle
+        self._update_command_warning()
+
+    def _update_command_warning(self) -> None:
+        """Analyze the command field for risky patterns and surface a red warning message."""
+        text = self._command_entry.get_text() or ""
+        s = text.strip()
+        if not s:
+            self._cmd_warn.set_text("")
+            return
+        import re as _re
+        warnings: list[str] = []
+        def add(msg: str):
+            if msg not in warnings:
+                warnings.append(msg)
+        # 🔥 File/Directory Deletion
+        # Generic rm -rf anywhere
+        if _re.search(r"\brm\b[^\n]*\-(?:[^\n]*r[^\n]*f|[^\n]*f[^\n]*r)", s):
+            add("rm -rf (destructive)")
+        if _re.search(r"\brm\s+-[A-Za-z]*r[A-Za-z]*f\b.*\s/\s*$", s) or _re.search(r"\brm\s+-[A-Za-z]*r[A-Za-z]*f\b\s*/(\s|$)", s):
+            add("rm -rf /")
+        if _re.search(r"\brm\s+-[A-Za-z]*r[A-Za-z]*f\b.*(\s\*\b|\s\\\.\*)", s):
+            add("rm -rf with wildcard (dangerous glob)")
+        if _re.search(r"\brm\s+-[A-Za-z]*r[A-Za-z]*f\b.*(\$HOME|~)\b", s):
+            add("rm -rf $HOME")
+        if _re.search(r"\bfind\b.*-exec[^;]*\brm\b[^;]*-r[fF]?[^;]*\{\}\s*;", s):
+            add("find -exec rm -rf {}")
+        if _re.search(r"\brm\s+-[A-Za-z]*r[A-Za-z]*f\b\s+/tmp/\*", s):
+            add("rm -rf /tmp/*")
+        # ⚠️ Overwriting / Truncating Files
+        if _re.search(r"(^|\s)>(?!>)\s*[^>\s]", s):
+            add("single > redirection (truncates)")
+        if _re.search(r"\bcat\s+/dev/null\s*>", s):
+            add("cat /dev/null > file (truncate)")
+        if _re.search(r"^\s*:\s*>", s):
+            add(": > file (truncate)")
+        # 🗄️ Disk / Filesystem Operations
+        if _re.search(r"\bmkfs\.[A-Za-z0-9]+\b", s):
+            add("mkfs.* (reformats)")
+        if _re.search(r"\bdd\s+if=/dev/zero\s+of=/dev/\S+", s):
+            add("dd to block device")
+        if _re.search(r"\b(wipefs|shred|blkdiscard)\b", s):
+            add("destructive disk tool")
+        if _re.search(r"\b(parted|fdisk)\b", s):
+            add("partition tool (scripted)")
+        # 🔐 User / System Accounts
+        if _re.search(r"\buserdel\b\s+-r\b", s):
+            add("userdel -r (deletes home)")
+        if _re.search(r"\bgroupdel\b\s+\S+", s):
+            add("groupdel")
+        if _re.search(r"(/etc/(passwd|shadow))", s) and _re.search(r"\b(sed\s+-i|echo\b.*>)", s):
+            add("modifies /etc/passwd or /etc/shadow")
+        # 🌐 Network / Services
+        if _re.search(r"\b(iptables\s+-F|ufw\s+reset)\b", s):
+            add("flushes firewall rules")
+        if _re.search(r"\bsystemctl\b[^\n]*disable\b[^\n]*--now\b[^\n]*(ssh|network|NetworkManager)", s):
+            add("disables critical service")
+        if _re.search(r"\bkill\s+-9\s+-1\b", s):
+            add("kill -9 -1")
+        # ⚡ Dangerous Recursion / Wildcards
+        if _re.search(r"\bch(own|mod)\b\s+-R\s+(\/|\/etc|\$HOME)(\s|$)", s):
+            add("recursive chmod/chown at sensitive root")
+        if _re.search(r"\b(cp\s+-rf|mv\s+-f)\b.*\*", s):
+            add("cp -rf/mv -f with wildcard")
+        if _re.search(r"\btar\s+-c[ajxz]f\s+/dev/\S+", s):
+            add("tar writing to block device")
+        # 💣 Special Cases
+        if _re.search(r"\b/dev/(sd\w+|nvme\d+n\d+(p\d+)?)\b", s):
+            add("writes to block device")
+        if _re.search(r"\b(\.ssh|\$HOME/\.ssh)\b.*(rm|shred|wipefs)\b", s):
+            add("touches ~/.ssh (keys)")
+        if _re.search(r"/var/log", s) and _re.search(r"\brm\s+-rf\b|(^|\s)>(?!>)", s):
+            add("wipes /var/log")
+        if _re.search(r"\byes\s*\|\s*(apt|dnf|yum|pacman|zypper|emerge)\b", s):
+            add("unguarded yes into package manager")
+        if warnings:
+            msg = "; ".join(warnings[:3])
+            # Red markup
+            self._cmd_warn.set_markup(f"<span foreground='red'>⚠ {GLib.markup_escape_text(msg)}</span>")
+        else:
+            try:
+                self._cmd_warn.set_text("")
+            except Exception:
+                pass
 
     def _on_nl_changed(self, *_):
         text = self._nl_entry.get_text().strip()
